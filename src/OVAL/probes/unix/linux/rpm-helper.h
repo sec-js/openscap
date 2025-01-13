@@ -30,6 +30,7 @@
 #include <rpm/rpmts.h>
 #include <rpm/rpmmacro.h>
 #include <rpm/rpmlog.h>
+#include <rpm/rpmpgp.h>
 #include <rpm/header.h>
 
 #include <pthread.h>
@@ -97,5 +98,8 @@ int rpmVerifyFile(const rpmts ts, const rpmfi fi,
  * It destroy error callback!
  */
 void rpmLibsPreload(void);
+
+void set_rpm_db_path(void);
+
 
 #endif

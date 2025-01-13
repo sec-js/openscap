@@ -294,6 +294,7 @@ void *rpminfo_probe_init(void)
 		return ((void *)g_rpm);
         }
 
+	set_rpm_db_path();
 	g_rpm->rpmts = rpmtsCreate();
 	pthread_mutex_init (&(g_rpm->mutex), NULL);
 

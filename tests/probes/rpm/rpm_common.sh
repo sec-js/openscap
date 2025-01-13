@@ -11,11 +11,7 @@ RPMBUILD="${RPMBASE}/build"
 
 # Since Fedora 36 RPM database location changed, see
 # https://fedoraproject.org/wiki/Changes/RelocateRPMToUsr
-if [ -d "/usr/lib/sysimage/rpm/" ]; then
-    RPMDB_PATH="/usr/lib/sysimage/rpm/"
-else
-    RPMDB_PATH="/var/lib/rpm/"
-fi
+RPMDB_PATH="/usr/lib/sysimage/rpm/"
 
 function rpm_build {
     require "rpmbuild" || return 255

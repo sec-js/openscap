@@ -14,7 +14,6 @@ jobs:
   trigger: pull_request
   metadata:
     targets:
-    - fedora-all-x86_64
     - centos-stream-8-x86_64
     - centos-stream-9-x86_64
 
@@ -22,6 +21,14 @@ jobs:
   trigger: pull_request
   metadata:
     targets:
-    - fedora-all-x86_64
     - centos-stream-8-x86_64
     - centos-stream-9-x86_64
+
+- job: copr_build
+  trigger: commit
+  metadata:
+    branch: maint-1.3
+    targets:
+    - centos-stream-8-x86_64
+    - centos-stream-9-x86_64
+    preserve_project: True

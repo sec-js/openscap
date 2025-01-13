@@ -70,6 +70,7 @@ struct xccdf_session {
 	const char *filename;				///< File name of SCAP (SDS or XCCDF) file for this session.
 	struct oscap_list *rules;
 	struct oscap_list *skip_rules;
+	const char *reference_parameter;
 	struct oscap_source *source;                    ///< Main source assigned with the main file (SDS or XCCDF)
 	char *temp_dir;					///< Temp directory used for decomposed component files.
 	struct {
@@ -358,7 +359,42 @@ void xccdf_session_free(struct xccdf_session *session)
 	oscap_htable_free(session->oval.arf_report_mapping, (oscap_destruct_func) free);
 	oscap_signature_ctx_free(session->signature_ctx);
 	oscap_list_free(session->rules, (oscap_destruct_func) free);
+	oscap_list_free(session->skip_rules, (oscap_destruct_func) free);
 	free(session);
+}
+
+static void _xccdf_session_reset_oval_agents_syschar(struct xccdf_session *session)
+{
+	if (session->oval.agents != NULL) {
+		for (int i=0; session->oval.agents[i]; i++) {
+			oval_agent_reset_syschar(session->oval.agents[i]);
+		}
+	}
+}
+
+static void _xccdf_session_reset_oval_agents_results(struct xccdf_session *session)
+{
+	if (session->oval.agents != NULL) {
+		for (int i=0; session->oval.agents[i]; i++) {
+			oval_agent_reset_results(session->oval.agents[i]);
+		}
+	}
+}
+
+void xccdf_session_result_reset(struct xccdf_session *session)
+{
+	if (session->xccdf.policy_model != NULL) {
+		oscap_list_free(session->xccdf.policy_model->policies, (oscap_destruct_func) xccdf_policy_free);
+		session->xccdf.policy_model->policies = oscap_list_new();
+	}
+
+	oscap_list_free(session->rules, (oscap_destruct_func) free);
+	session->rules = oscap_list_new();
+	oscap_list_free(session->skip_rules, (oscap_destruct_func) free);
+	session->skip_rules = oscap_list_new();
+
+	_xccdf_session_reset_oval_agents_syschar(session);
+	_xccdf_session_reset_oval_agents_results(session);
 }
 
 const char *xccdf_session_get_filename(const struct xccdf_session *session)
@@ -715,7 +751,9 @@ int xccdf_session_load(struct xccdf_session *session)
 			return ret;
 		}
 	}
-	return xccdf_session_load_tailoring(session);
+	ret = xccdf_session_load_tailoring(session);
+	oscap_source_free_xmlDoc(session->source);
+	return ret;
 }
 
 static int _reporter(const char *file, int line, const char *msg, void *arg)
@@ -1347,6 +1385,9 @@ int xccdf_session_evaluate(struct xccdf_session *session)
 	}
 	oscap_iterator_free(sit);
 
+	if (session->reference_parameter) {
+		xccdf_policy_set_reference_filter(policy, session->reference_parameter);
+	}
 	session->xccdf.result = xccdf_policy_evaluate(policy);
 	if (session->xccdf.result == NULL)
 		return 1;
@@ -1860,6 +1901,11 @@ bool xccdf_session_contains_fail_result(const struct xccdf_session *session)
 	return false;
 }
 
+struct xccdf_rule_result_iterator *xccdf_session_get_rule_results(const struct xccdf_session *session)
+{
+	return xccdf_result_get_rule_results(session->xccdf.result);
+}
+
 int xccdf_session_remediate(struct xccdf_session *session)
 {
 	int res = 0;
@@ -2016,4 +2062,9 @@ int xccdf_session_export_all(struct xccdf_session *session)
 cleanup:
 	oscap_source_free(arf_source);
 	return ret;
+}
+
+void xccdf_session_set_reference_filter(struct xccdf_session *session, const char *reference_filter)
+{
+	session->reference_parameter = reference_filter;
 }

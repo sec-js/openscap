@@ -86,6 +86,11 @@ Show info of the profile with the given ID.
 .RS
 Show profiles from the input file in the <id>:<title> format, one line per profile.
 .RE
+.TP
+\fB\-\-references\fR
+.RS
+Show list of references available in each benchmark.
+.RE
 
 .SH XCCDF OPERATIONS
 .TP
@@ -114,6 +119,12 @@ Select a particular rule from XCCDF document. Only this rule will be evaluated. 
 \fB\-\-skip-rule RULE\fR
 .RS
 Skip a particular rule from XCCDF document. This option can be used multiple times to skip multiple rules at once.
+.RE
+.TP
+\fB\-\-reference NAME:IDENTIFIER\fR
+.RS
+Evaluate rules matching the given reference. This option can be used to check for evaluating compliance with a particular policy requirement. Rules that match the reference will be evaluated, other rules will be skipped and a result of notselected will be returned. The argument needs to be provided in the form NAME:IDENTIFIER (colon is a separator), where NAME is the reference name used as a text of xccdf:reference elements that are child of xccdf:Benchmark element and IDENTIFIER is a text of xccdf:reference element that is child of a particular xccdf:Rule element which has the same @href value as the xccdf:reference element of the NAME value. This feature requires SCAP content to be formed in the aforementioned way. For example: --reference "cis:4.1.3.19", --reference "anssi:BP28(R29)"
+List of references available in the given benchmark can be obtained by running the oscap info --references command.
 .RE
 .TP
 \fB\-\-tailoring-file TAILORING_FILE\fR
@@ -419,11 +430,12 @@ To use the ability to include additional information from SCE in XCCDF result fi
 Generate a script that shall bring the system to a state of compliance with given XCCDF Benchmark. There are 2 possibilities when generating fixes: Result-oriented fixes (--result-id) or Profile-oriented fixes (--profile). Result-oriented takes precedences over Profile-oriented, if result-id is given, oscap will ignore any profile provided.
 .TP
 Result-oriented fixes are generated using result-id provided to select only the failing rules from results in xccdf-file, it skips all other rules.
+It isn't possible to generate result-oriented fixes for the bootc fix type.
 .TP
 Profile-oriented fixes are generated using all rules within the provided profile. If no result-id/profile are provided, (default) profile will be used to generate fixes.
 .TP
 \fB\-\-fix-type TYPE\fR
-Specify fix type. There are multiple programming languages in which the fix script can be generated. TYPE should be one of: bash, ansible, puppet, anaconda, ignition, kubernetes, blueprint. Default is bash. This option is mutually exclusive with --template, because fix type already determines the template URN.
+Specify fix type. There are multiple programming languages in which the fix script can be generated. TYPE should be one of: bash, ansible, puppet, anaconda, ignition, kubernetes, blueprint, bootc. Default is bash. This option is mutually exclusive with --template, because fix type already determines the template URN.
 .TP
 \fB\-\-output FILE\fR
 Write the report to this file instead of standard output.
