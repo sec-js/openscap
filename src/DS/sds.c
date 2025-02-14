@@ -411,7 +411,7 @@ static int _handle_disabled_downloads(struct ds_sds_session *session, const char
 			"WARNING: Using local file '%s' instead of '%s'",
 			local_filepath, xlink_href);
 		struct oscap_source *source_file = oscap_source_new_from_file(local_filepath);
-		xmlDoc *doc = oscap_source_get_xmlDoc(source_file);
+		xmlDoc *doc = oscap_source_pop_xmlDoc(source_file);
 		if (doc == NULL) {
 			free(local_filepath);
 			oscap_source_free(source_file);
@@ -425,6 +425,7 @@ static int _handle_disabled_downloads(struct ds_sds_session *session, const char
 			return -1;
 		}
 		free(local_filepath);
+		oscap_source_free(source_file);
 		return 0;
 	}
 	ds_sds_session_remote_resources_progress(session)(true,
@@ -509,7 +510,9 @@ int ds_sds_dump_component_ref_as(const xmlNodePtr component_ref, struct ds_sds_s
 	// make a copy of xlink_href because ds_sds_dump_component_by_href modifies its second argument
 	char *xlink_href_copy = oscap_strdup(xlink_href);
 	int ret = ds_sds_dump_component_by_href(session, xlink_href, target_filename_dirname, relative_filepath, cref_id, &component_id);
-	oscap_htable_add(ds_sds_session_get_component_uris(session), cref_id, xlink_href_copy);
+	if (!oscap_htable_add(ds_sds_session_get_component_uris(session), cref_id, xlink_href_copy)) {
+		free(xlink_href_copy);
+	}
 
 	xmlFree(xlink_href);
 	xmlFree(cref_id);

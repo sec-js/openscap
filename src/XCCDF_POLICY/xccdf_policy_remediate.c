@@ -38,16 +38,21 @@
 #endif
 
 #include <libxml/tree.h>
-#include <pcre.h>
 
 #include "XCCDF/item.h"
 #include "common/_error.h"
 #include "common/debug_priv.h"
 #include "common/oscap_acquire.h"
+#include "common/oscap_pcre.h"
 #include "xccdf_policy_priv.h"
 #include "xccdf_policy_model_priv.h"
 #include "public/xccdf_policy.h"
 #include "oscap_helpers.h"
+
+struct bootc_commands {
+	struct oscap_list *dnf_install;
+	struct oscap_list *dnf_remove;
+};
 
 static int _rule_add_info_message(struct xccdf_rule_result *rr, ...)
 {
@@ -422,12 +427,14 @@ static inline int _xccdf_fix_execute(struct xccdf_rule_result *rr, struct xccdf_
 	int fd = oscap_acquire_temp_file(temp_dir, "fix-XXXXXXXX", &temp_file);
 	if (fd == -1) {
 		_rule_add_info_message(rr, "mkstemp failed: %s", strerror(errno));
+		free(temp_file);
 		goto cleanup;
 	}
 
 	if (_write_text_to_fd(fd, fix_text) != 0) {
 		_rule_add_info_message(rr, "Could not write to the temp file: %s", strerror(errno));
 		(void) close(fd);
+		free(temp_file);
 		goto cleanup;
 	}
 
@@ -437,14 +444,15 @@ static inline int _xccdf_fix_execute(struct xccdf_rule_result *rr, struct xccdf_
 	int pipefd[2];
 	if (pipe(pipefd) == -1) {
 		_rule_add_info_message(rr, "Could not create pipe: %s", strerror(errno));
+		free(temp_file);
 		goto cleanup;
 	}
 
 	int fork_result = fork();
 	if (fork_result >= 0) {
-		/* fork succeded */
+		/* fork succeeded */
 		if (fork_result == 0) {
-			/* Execute fix and forward output to the parrent. */
+			/* Execute fix and forward output to the parent. */
 			close(pipefd[0]);
 			dup2(pipefd[1], fileno(stdout));
 			dup2(pipefd[1], fileno(stderr));
@@ -630,7 +638,7 @@ static int _write_fix_header_to_fd(const char *sys, int output_fd, struct xccdf_
 				"###############################################################################\n"
 				"# BEGIN fix (%i / %i) for '%s'\n"
 				"###############################################################################\n"
-				"(>&2 echo \"Remediating rule %i/%i: '%s'\")\n",
+				"(>&2 echo \"Remediating rule %i/%i: '%s'\"); (\n",
 				current, total, xccdf_rule_get_id(rule), current, total, xccdf_rule_get_id(rule));
 		return _write_text_to_fd_and_free(output_fd, fix_header);
 	} else {
@@ -641,7 +649,7 @@ static int _write_fix_header_to_fd(const char *sys, int output_fd, struct xccdf_
 static int _write_fix_footer_to_fd(const char *sys, int output_fd, struct xccdf_rule *rule)
 {
 	if (oscap_streq(sys, "") || oscap_streq(sys, "urn:xccdf:fix:script:sh") || oscap_streq(sys, "urn:xccdf:fix:commands")) {
-		char *fix_footer = oscap_sprintf("\n# END fix for '%s'\n\n", xccdf_rule_get_id(rule));
+		char *fix_footer = oscap_sprintf("\n) # END fix for '%s'\n\n", xccdf_rule_get_id(rule));
 		return _write_text_to_fd_and_free(output_fd, fix_footer);
 	} else {
 		return 0;
@@ -661,29 +669,39 @@ static int _write_fix_missing_warning_to_fd(const char *sys, int output_fd, stru
 struct blueprint_entries {
 	const char *pattern;
 	struct oscap_list *list;
-	pcre *re;
+	oscap_pcre_t *re;
 };
 
-static inline int _parse_blueprint_fix(const char *fix_text, struct oscap_list *generic, struct oscap_list *services_enable, struct oscap_list *services_disable, struct oscap_list *kernel_append)
+struct blueprint_customizations {
+	struct oscap_list *generic;
+	struct oscap_list *services_enable;
+	struct oscap_list *services_disable;
+	struct oscap_list *services_mask;
+	struct oscap_list *kernel_append;
+};
+
+static inline int _parse_blueprint_fix(const char *fix_text, struct blueprint_customizations *customizations)
 {
-	const char *err;
+	char *err;
 	int errofs;
 	int ret = 0;
 
 	struct blueprint_entries tab[] = {
-		{"\\[customizations\\.services\\]\\s+enabled[=\\s]+\\[([^\\]]+)\\]\\s+", services_enable, NULL},
-		{"\\[customizations\\.services\\]\\s+disabled[=\\s]+\\[([^\\]]+)\\]\\s+", services_disable, NULL},
-		{"\\[customizations\\.kernel\\]\\s+append[=\\s\"]+([^\"]+)[\\s\"]+", kernel_append, NULL},
+		{"\\[customizations\\.services\\]\\s+enabled[=\\s]+\\[([^\\]]+)\\]\\s+", customizations->services_enable, NULL},
+		{"\\[customizations\\.services\\]\\s+disabled[=\\s]+\\[([^\\]]+)\\]\\s+", customizations->services_disable, NULL},
+		{"\\[customizations\\.services\\]\\s+masked[=\\s]+\\[([^\\]]+)\\]\\s+", customizations->services_mask, NULL},
+		{"\\[customizations\\.kernel\\]\\s+append[=\\s\"]+([^\"]+)[\\s\"]+", customizations->kernel_append, NULL},
 		// We do this only to pop the 'distro' entry to the top of the generic list,
 		// effectively placing it to the root of the TOML document.
-		{"\\s+(distro[=\\s\"]+[^\"]+[\\s\"]+)", generic, NULL},
+		{"\\s+(distro[=\\s\"]+[^\"]+[\\s\"]+)", customizations->generic, NULL},
 		{NULL, NULL, NULL}
 	};
 
 	for (int i = 0; tab[i].pattern != NULL; i++) {
-		tab[i].re = pcre_compile(tab[i].pattern, PCRE_UTF8, &err, &errofs, NULL);
+		tab[i].re = oscap_pcre_compile(tab[i].pattern, OSCAP_PCRE_OPTS_UTF8, &err, &errofs);
 		if (tab[i].re == NULL) {
-			dE("Unable to compile /%s/ regex pattern, pcre_compile() returned error (offset: %d): '%s'.\n", tab[i].pattern, errofs, err);
+			dE("Unable to compile /%s/ regex pattern, oscap_pcre_compile() returned error (offset: %d): '%s'.\n", tab[i].pattern, errofs, err);
+			oscap_pcre_err_free(err);
 			ret = 1;
 			goto exit;
 		}
@@ -695,7 +713,7 @@ static inline int _parse_blueprint_fix(const char *fix_text, struct oscap_list *
 
 	for (int i = 0; tab[i].pattern != NULL; i++) {
 		while (true) {
-			const int match = pcre_exec(tab[i].re, NULL, fix_text, fix_text_len, start_offset,
+			const int match = oscap_pcre_exec(tab[i].re, fix_text, fix_text_len, start_offset,
 			                            0, ovector, sizeof(ovector) / sizeof(ovector[0]));
 			if (match == -1)
 				break;
@@ -710,7 +728,7 @@ static inline int _parse_blueprint_fix(const char *fix_text, struct oscap_list *
 			memcpy(val, &fix_text[ovector[2]], ovector[3] - ovector[2]);
 			val[ovector[3] - ovector[2]] = '\0';
 
-			if (!oscap_list_contains(kernel_append, val, (oscap_cmp_func) oscap_streq)) {
+			if (!oscap_list_contains(customizations->kernel_append, val, (oscap_cmp_func) oscap_streq)) {
 				oscap_list_prepend(tab[i].list, val);
 			} else {
 				free(val);
@@ -721,12 +739,12 @@ static inline int _parse_blueprint_fix(const char *fix_text, struct oscap_list *
 	}
 
 	if (start_offset < fix_text_len-1) {
-		oscap_list_add(generic, strdup(fix_text + start_offset));
+		oscap_list_add(customizations->generic, strdup(fix_text + start_offset));
 	}
 
 exit:
 	for (int i = 0; tab[i].pattern != NULL; i++)
-		pcre_free(tab[i].re);
+		oscap_pcre_free(tab[i].re);
 
 	return ret;
 }
@@ -737,13 +755,14 @@ static inline int _parse_ansible_fix(const char *fix_text, struct oscap_list *va
 	const char *pattern =
 		"- name: XCCDF Value [^ ]+ # promote to variable\n  set_fact:\n"
 		"    ([^:]+): (.+)\n  tags:\n    - always\n";
-	const char *err;
+	char *err;
 	int errofs;
 
-	pcre *re = pcre_compile(pattern, PCRE_UTF8, &err, &errofs, NULL);
+	oscap_pcre_t *re = oscap_pcre_compile(pattern, OSCAP_PCRE_OPTS_UTF8, &err, &errofs);
 	if (re == NULL) {
 		dE("Unable to compile regex pattern, "
-				"pcre_compile() returned error (offset: %d): '%s'.\n", errofs, err);
+				"oscap_pcre_compile() returned error (offset: %d): '%s'.\n", errofs, err);
+		oscap_pcre_err_free(err);
 		return 1;
 	}
 
@@ -758,14 +777,14 @@ static inline int _parse_ansible_fix(const char *fix_text, struct oscap_list *va
 	const size_t fix_text_len = strlen(fix_text);
 	int start_offset = 0;
 	while (true) {
-		const int match = pcre_exec(re, NULL, fix_text, fix_text_len, start_offset,
+		const int match = oscap_pcre_exec(re, fix_text, fix_text_len, start_offset,
 				0, ovector, sizeof(ovector) / sizeof(ovector[0]));
 		if (match == -1)
 			break;
 		if (match != 3) {
 			dE("Expected 2 capture group matches per XCCDF variable. Found %i!",
 				match - 1);
-			pcre_free(re);
+			oscap_pcre_free(re);
 			return 1;
 		}
 
@@ -807,7 +826,7 @@ static inline int _parse_ansible_fix(const char *fix_text, struct oscap_list *va
 		oscap_list_add(tasks, remediation_part);
 	}
 
-	pcre_free(re);
+	oscap_pcre_free(re);
 	return 0;
 }
 
@@ -867,14 +886,14 @@ static int _xccdf_policy_rule_generate_fix(struct xccdf_policy *policy, struct x
 	return ret;
 }
 
-static int _xccdf_policy_rule_generate_blueprint_fix(struct xccdf_policy *policy, struct xccdf_rule *rule, const char *template, struct oscap_list *generic, struct oscap_list *services_enable, struct oscap_list *services_disable, struct oscap_list *kernel_append)
+static int _xccdf_policy_rule_generate_blueprint_fix(struct xccdf_policy *policy, struct xccdf_rule *rule, const char *template, struct blueprint_customizations *customizations)
 {
 	char *fix_text = NULL;
 	int ret = _xccdf_policy_rule_get_fix_text(policy, rule, template, &fix_text);
 	if (fix_text == NULL) {
 		return ret;
 	}
-	ret = _parse_blueprint_fix(fix_text, generic, services_enable, services_disable, kernel_append);
+	ret = _parse_blueprint_fix(fix_text, customizations);
 	free(fix_text);
 	return ret;
 }
@@ -1138,10 +1157,15 @@ static int _write_script_header_to_fd(struct xccdf_policy *policy, struct xccdf_
 	} else if (oscap_streq(sys, "urn:redhat:osbuild:blueprint")) {
 		char *blueprint_fix_header = oscap_sprintf(
 			"%s"
-			"name = \"%s\"\n"
+			"name = \"hardened_%s\"\n"
 			"description = \"%s\"\n"
-			"version = \"%s\"\n",
-			fix_header, profile_id, profile_title, benchmark_version_info);
+			"version = \"%s\"\n\n"
+			"[customizations.openscap]\n"
+			"profile_id = \"%s\"\n"
+			"# If your hardening data stream is not part of the 'scap-security-guide' package\n"
+			"# provide the absolute path to it (from the root of the image filesystem).\n"
+			"# datastream = \"/usr/share/xml/scap/ssg/content/ssg-xxxxx-ds.xml\"\n\n",
+			fix_header, profile_id, profile_title, benchmark_version_info, profile_id);
 		free(fix_header);
 		free(profile_title);
 		return _write_text_to_fd_and_free(output_fd, blueprint_fix_header);
@@ -1151,67 +1175,68 @@ static int _write_script_header_to_fd(struct xccdf_policy *policy, struct xccdf_
 	}
 }
 
+static inline void _format_and_write_list_into_blueprint_fd(struct oscap_list *list_, const char *separator, int output_fd)
+{
+	struct oscap_iterator *it = oscap_iterator_new(list_);
+	while(oscap_iterator_has_more(it)) {
+		char *var_line = (char *)oscap_iterator_next(it);
+		_write_text_to_fd(output_fd, var_line);
+		if (oscap_iterator_has_more(it))
+			_write_text_to_fd(output_fd, separator);
+	}
+	oscap_iterator_free(it);
+}
+
 static int _xccdf_policy_generate_fix_blueprint(struct oscap_list *rules_to_fix, struct xccdf_policy *policy, const char *sys, int output_fd)
 {
 	int ret = 0;
-	struct oscap_list *generic = oscap_list_new();
-	struct oscap_list *services_enable = oscap_list_new();
-	struct oscap_list *services_disable = oscap_list_new();
-	struct oscap_list *kernel_append = oscap_list_new();
+	struct blueprint_customizations customizations = {
+		.generic = oscap_list_new(),
+		.services_enable = oscap_list_new(),
+		.services_disable = oscap_list_new(),
+		.services_mask = oscap_list_new(),
+		.kernel_append = oscap_list_new()
+	};
+
 	struct oscap_iterator *rules_to_fix_it = oscap_iterator_new(rules_to_fix);
 	while (oscap_iterator_has_more(rules_to_fix_it)) {
 		struct xccdf_rule *rule = (struct xccdf_rule*)oscap_iterator_next(rules_to_fix_it);
-		ret = _xccdf_policy_rule_generate_blueprint_fix(policy, rule, sys, generic, services_enable, services_disable, kernel_append);
+		ret = _xccdf_policy_rule_generate_blueprint_fix(policy, rule, sys, &customizations);
 		if (ret != 0)
 			break;
 	}
 	oscap_iterator_free(rules_to_fix_it);
 
-	struct oscap_iterator *generic_it = oscap_iterator_new(generic);
+	struct oscap_iterator *generic_it = oscap_iterator_new(customizations.generic);
 	while(oscap_iterator_has_more(generic_it)) {
 		char *var_line = (char *) oscap_iterator_next(generic_it);
 		_write_text_to_fd(output_fd, var_line);
 	}
 	_write_text_to_fd(output_fd, "\n");
 	oscap_iterator_free(generic_it);
-	oscap_list_free(generic, free);
 
 	_write_text_to_fd(output_fd, "[customizations.kernel]\nappend = \"");
-	struct oscap_iterator *kernel_append_it = oscap_iterator_new(kernel_append);
-	while(oscap_iterator_has_more(kernel_append_it)) {
-		char *var_line = (char *) oscap_iterator_next(kernel_append_it);
-		_write_text_to_fd(output_fd, var_line);
-		if (oscap_iterator_has_more(kernel_append_it))
-			_write_text_to_fd(output_fd, " ");
-	}
+	_format_and_write_list_into_blueprint_fd(customizations.kernel_append, " ", output_fd);
 	_write_text_to_fd(output_fd, "\"\n\n");
-	oscap_iterator_free(kernel_append_it);
-	oscap_list_free(kernel_append, free);
 
 	_write_text_to_fd(output_fd, "[customizations.services]\n");
 	_write_text_to_fd(output_fd, "enabled = [");
-	struct oscap_iterator *services_enable_it = oscap_iterator_new(services_enable);
-	while(oscap_iterator_has_more(services_enable_it)) {
-		char *var_line = (char *) oscap_iterator_next(services_enable_it);
-		_write_text_to_fd(output_fd, var_line);
-		if (oscap_iterator_has_more(services_enable_it))
-			_write_text_to_fd(output_fd, ",");
-	}
+	_format_and_write_list_into_blueprint_fd(customizations.services_enable, ",", output_fd);
 	_write_text_to_fd(output_fd, "]\n");
-	oscap_iterator_free(services_enable_it);
-	oscap_list_free(services_enable, free);
 
 	_write_text_to_fd(output_fd, "disabled = [");
-	struct oscap_iterator *services_disable_it = oscap_iterator_new(services_disable);
-	while(oscap_iterator_has_more(services_disable_it)) {
-		char *var_line = (char *) oscap_iterator_next(services_disable_it);
-		_write_text_to_fd(output_fd, var_line);
-		if (oscap_iterator_has_more(services_disable_it))
-			_write_text_to_fd(output_fd, ",");
-	}
+	_format_and_write_list_into_blueprint_fd(customizations.services_disable, ",", output_fd);
+	_write_text_to_fd(output_fd, "]\n");
+
+	_write_text_to_fd(output_fd, "masked = [");
+	_format_and_write_list_into_blueprint_fd(customizations.services_mask, ",", output_fd);
 	_write_text_to_fd(output_fd, "]\n\n");
-	oscap_iterator_free(services_disable_it);
-	oscap_list_free(services_disable, free);
+
+	oscap_list_free(customizations.services_mask, free);
+	oscap_list_free(customizations.services_disable, free);
+	oscap_list_free(customizations.kernel_append, free);
+	oscap_list_free(customizations.services_enable, free);
+	oscap_list_free(customizations.generic, free);
 
 	return ret;
 }
@@ -1263,6 +1288,144 @@ static int _xccdf_policy_generate_fix_other(struct oscap_list *rules_to_fix, str
 			break;
 	}
 	oscap_iterator_free(rules_to_fix_it);
+	return ret;
+}
+
+static int _parse_bootc_line(const char *line, struct bootc_commands *cmds)
+{
+	int ret = 0;
+	char *dup = strdup(line);
+	char **words = oscap_split(dup, " ");
+	enum states {
+		BOOTC_START,
+		BOOTC_DNF,
+		BOOTC_DNF_INSTALL,
+		BOOTC_DNF_REMOVE,
+		BOOTC_ERROR
+	};
+	int state = BOOTC_START;
+	for (unsigned int i = 0; words[i] != NULL; i++) {
+		char *word = oscap_trim(words[i]);
+		if (*word == '\0')
+			continue;
+		switch (state) {
+		case BOOTC_START:
+			if (!strcmp(word, "dnf")) {
+				state = BOOTC_DNF;
+			} else {
+				ret = 1;
+				oscap_seterr(OSCAP_EFAMILY_OSCAP, "Unsupported command keyword '%s' in command: '%s'", word, line);
+				goto cleanup;
+			}
+			break;
+		case BOOTC_DNF:
+			if (!strcmp(word, "install")) {
+				state = BOOTC_DNF_INSTALL;
+			} else if (!strcmp(word, "remove")) {
+				state = BOOTC_DNF_REMOVE;
+			} else {
+				ret = 1;
+				oscap_seterr(OSCAP_EFAMILY_OSCAP, "Unsupported 'dnf' command keyword '%s' in command:'%s'", word, line);
+				goto cleanup;
+			}
+			break;
+		case BOOTC_DNF_INSTALL:
+			oscap_list_add(cmds->dnf_install, strdup(word));
+			break;
+		case BOOTC_DNF_REMOVE:
+			oscap_list_add(cmds->dnf_remove, strdup(word));
+			break;
+		case BOOTC_ERROR:
+			ret = 1;
+			oscap_seterr(OSCAP_EFAMILY_OSCAP, "Unexpected string '%s' in command: '%s'", word, line);
+			goto cleanup;
+		default:
+			break;
+		}
+	}
+
+cleanup:
+	free(words);
+	free(dup);
+	return ret;
+}
+
+static int _xccdf_policy_rule_generate_bootc_fix(struct xccdf_policy *policy, struct xccdf_rule *rule, const char *template, struct bootc_commands *cmds)
+{
+	char *fix_text = NULL;
+	int ret = _xccdf_policy_rule_get_fix_text(policy, rule, template, &fix_text);
+	if (fix_text == NULL) {
+		return ret;
+	}
+	char *dup = strdup(fix_text);
+	char **lines = oscap_split(dup, "\n");
+	for (unsigned int i = 0; lines[i] != NULL; i++) {
+		char *line = lines[i];
+		char *trim_line = oscap_trim(strdup(line));
+		if (*trim_line != '#' && *trim_line != '\0') {
+			_parse_bootc_line(trim_line, cmds);
+		}
+		free(trim_line);
+	}
+	free(lines);
+	free(dup);
+	free(fix_text);
+	return ret;
+}
+
+static int _generate_bootc_dnf(struct bootc_commands *cmds, int output_fd)
+{
+	struct oscap_iterator *dnf_install_it = oscap_iterator_new(cmds->dnf_install);
+	if (oscap_iterator_has_more(dnf_install_it)) {
+		_write_text_to_fd(output_fd, "dnf -y install \\\n");
+		while (oscap_iterator_has_more(dnf_install_it)) {
+			char *package = (char *) oscap_iterator_next(dnf_install_it);
+			_write_text_to_fd(output_fd, "    ");
+			_write_text_to_fd(output_fd, package);
+			if (oscap_iterator_has_more(dnf_install_it))
+				_write_text_to_fd(output_fd, " \\\n");
+		}
+		_write_text_to_fd(output_fd, "\n\n");
+	}
+	oscap_iterator_free(dnf_install_it);
+
+	struct oscap_iterator *dnf_remove_it = oscap_iterator_new(cmds->dnf_remove);
+	if (oscap_iterator_has_more(dnf_remove_it)) {
+		_write_text_to_fd(output_fd, "dnf -y remove \\\n");
+		while (oscap_iterator_has_more(dnf_remove_it)) {
+			char *package = (char *) oscap_iterator_next(dnf_remove_it);
+			_write_text_to_fd(output_fd, "    ");
+			_write_text_to_fd(output_fd, package);
+			if (oscap_iterator_has_more(dnf_remove_it))
+				_write_text_to_fd(output_fd, " \\\n");
+		}
+		_write_text_to_fd(output_fd, "\n");
+	}
+	oscap_iterator_free(dnf_remove_it);
+	return 0;
+}
+
+static int _xccdf_policy_generate_fix_bootc(struct oscap_list *rules_to_fix, struct xccdf_policy *policy, const char *sys, int output_fd)
+{
+	struct bootc_commands cmds = {
+		.dnf_install = oscap_list_new(),
+		.dnf_remove = oscap_list_new(),
+	};
+	int ret = 0;
+	struct oscap_iterator *rules_to_fix_it = oscap_iterator_new(rules_to_fix);
+	while (oscap_iterator_has_more(rules_to_fix_it)) {
+		struct xccdf_rule *rule = (struct xccdf_rule *) oscap_iterator_next(rules_to_fix_it);
+		ret = _xccdf_policy_rule_generate_bootc_fix(policy, rule, sys, &cmds);
+		if (ret != 0)
+			break;
+	}
+	oscap_iterator_free(rules_to_fix_it);
+
+	_write_text_to_fd(output_fd, "#!/bin/bash\n");
+	_generate_bootc_dnf(&cmds, output_fd);
+
+	oscap_list_free(cmds.dnf_install, free);
+	oscap_list_free(cmds.dnf_remove, free);
 	return ret;
 }
 
@@ -1322,6 +1485,8 @@ int xccdf_policy_generate_fix(struct xccdf_policy *policy, struct xccdf_result *
 		ret = _xccdf_policy_generate_fix_ansible(rules_to_fix, policy, sys, output_fd);
 	} else if (strcmp(sys, "urn:redhat:osbuild:blueprint") == 0) {
 		ret = _xccdf_policy_generate_fix_blueprint(rules_to_fix, policy, sys, output_fd);
+	} else if (strcmp(sys, "urn:xccdf:fix:script:bootc") == 0) {
+		ret = _xccdf_policy_generate_fix_bootc(rules_to_fix, policy, sys, output_fd);
 	} else {
 		ret =  _xccdf_policy_generate_fix_other(rules_to_fix, policy, sys, output_fd);
 	}

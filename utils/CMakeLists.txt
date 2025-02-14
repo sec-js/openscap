@@ -91,7 +91,7 @@ if(ENABLE_OSCAP_UTIL_DOCKER)
 
 	if(NOT PYTHON_SITE_PACKAGES_INSTALL_DIR)
 	execute_process(COMMAND
-		${OSCAP_DOCKER_PYTHON} -c "from distutils.sysconfig import get_python_lib; print(get_python_lib(False, False, prefix='${CMAKE_INSTALL_PREFIX}'))"
+		${OSCAP_DOCKER_PYTHON} -c "import sysconfig; print(sysconfig.get_path('purelib'))"
 		OUTPUT_VARIABLE PYTHON_SITE_PACKAGES_INSTALL_DIR
 		OUTPUT_STRIP_TRAILING_WHITESPACE
 	)
@@ -136,6 +136,14 @@ if(ENABLE_OSCAP_UTIL_PODMAN)
 		DESTINATION ${CMAKE_INSTALL_BINDIR}
 	)
 	install(FILES "oscap-podman.8"
+		DESTINATION "${CMAKE_INSTALL_MANDIR}/man8"
+	)
+endif()
+if(ENABLE_OSCAP_UTIL_IM)
+	install(PROGRAMS "oscap-im"
+		DESTINATION ${CMAKE_INSTALL_BINDIR}
+	)
+	install(FILES "oscap-im.8"
 		DESTINATION "${CMAKE_INSTALL_MANDIR}/man8"
 	)
 endif()

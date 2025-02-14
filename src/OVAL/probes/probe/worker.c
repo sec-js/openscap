@@ -52,10 +52,6 @@ extern int chroot(const char *);
 #include "probe-table.h"
 #include "probe.h"
 
-/* default max. memory usage ratio - used/total */
-/* can be overridden by environment variable OSCAP_PROBE_MEMORY_USAGE_RATIO */
-#define OSCAP_PROBE_MEMORY_USAGE_RATIO_DEFAULT 0.33
-
 extern bool  OSCAP_GSYM(varref_handling);
 extern void *OSCAP_GSYM(probe_arg);
 
@@ -218,6 +214,9 @@ static int probe_varref_create_ctx(const SEXP_t *probe_in, SEXP_t *varrefs, stru
 	/* varref_cnt = SEXP_number_getu_32(r0 = SEXP_list_nth(varrefs, 2)); */
 	ent_cnt = SEXP_number_getu_32(r1 = SEXP_list_nth(varrefs, 3));
 	SEXP_free(r1);
+
+	if (ent_cnt == UINT32_MAX)
+		return -1;
 
 	struct probe_varref_ctx *ctx = malloc(sizeof(struct probe_varref_ctx));
 	ctx->pi2 = SEXP_softref((SEXP_t *)probe_in);
@@ -973,6 +972,23 @@ static SEXP_t *probe_set_eval(probe_t *probe, SEXP_t *set, size_t depth)
 	return result;
 }
 
+static void _add_blocked_paths(struct oscap_list *bpaths)
+{
+	char *envar = getenv("OSCAP_PROBE_IGNORE_PATHS");
+	if (envar == NULL) {
+		return;
+	}
+#ifdef OS_WINDOWS
+	dW("OSCAP_PROBE_IGNORE_PATHS isn't effective on Windows.");
+#else
+	char **paths = oscap_split(envar, ":");
+	for (int i = 0; paths[i]; ++i) {
+		oscap_list_add(bpaths, strdup(paths[i]));
+	}
+	free(paths);
+#endif
+}
+
 /**
  * Worker thread function. This functions handles the evalution of objects and sets.
  * @param msg_in SEAP message with the request which contains the object to be evaluated
@@ -1018,12 +1034,12 @@ SEXP_t *probe_worker(probe_t *probe, SEAP_msg_t *msg_in, int *ret)
 				dE("open(\".\") failed: %s", strerror(errno));
 				return NULL;
 			}
-			if (chdir(rootdir) != 0) {
-				dE("chdir failed: %s", strerror(errno));
-			}
 
 			if (chroot(rootdir) != 0) {
 				dE("chroot failed: %s", strerror(errno));
+			}
+			if (chdir("/") != 0) {
+				dE("chdir failed: %s", strerror(errno));
 			}
 			/* NOTE: We're running in a different root directory.
 			 * Unless /proc, /sys are somehow emulated for the new
@@ -1075,6 +1091,18 @@ SEXP_t *probe_worker(probe_t *probe, SEAP_msg_t *msg_in, int *ret)
 			if (max_ratio > 0)
 				pctx.max_mem_ratio = max_ratio;
 		}
+		pctx.collected_items = 0;
+		pctx.max_collected_items = OSCAP_PROBE_COLLECT_UNLIMITED;
+		char *max_collected_items_str = getenv("OSCAP_PROBE_MAX_COLLECTED_ITEMS");
+		if (max_collected_items_str != NULL) {
+			int max_collected_items = strtol(max_collected_items_str, NULL, 0);
+			if (max_collected_items > 0) {
+				pctx.max_collected_items = max_collected_items;
+			}
+		}
+
+		pctx.blocked_paths = oscap_list_new();
+		_add_blocked_paths(pctx.blocked_paths);
 
 		/* simple object */
                 pctx.icache  = probe->icache;
@@ -1135,6 +1163,7 @@ SEXP_t *probe_worker(probe_t *probe, SEAP_msg_t *msg_in, int *ret)
 				SEXP_free(pctx.filters);
 				SEXP_free(probe_in);
 				SEXP_free(mask);
+				oscap_list_free(pctx.blocked_paths, free);
 				*ret = PROBE_EUNKNOWN;
 				return (NULL);
 			}
@@ -1174,6 +1203,7 @@ SEXP_t *probe_worker(probe_t *probe, SEAP_msg_t *msg_in, int *ret)
 		}
 
                 SEXP_free(pctx.filters);
+		oscap_list_free(pctx.blocked_paths, free);
 	}
 
 	SEXP_free(probe_in);

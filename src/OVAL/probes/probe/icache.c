@@ -39,6 +39,7 @@
 #include "probe-api.h"
 #include "common/debug_priv.h"
 #include "common/memusage.h"
+#include "oscap_helpers.h"
 
 #include "probe.h"
 #include "icache.h"
@@ -214,6 +215,7 @@ const char* thread_name = "icache_worker";
 
         while(pthread_cond_wait(&cache->queue_notempty, &cache->queue_mutex) == 0) {
 			if (cache->queue_cnt <= 0) {
+				pthread_mutex_unlock(&cache->queue_mutex);
 				return NULL;
 			}
         do {
@@ -234,6 +236,7 @@ const char* thread_name = "icache_worker";
 		if (cache->queue_cnt == 0 ?
 			cache->queue_end != cache->queue_beg :
 			cache->queue_end == cache->queue_beg) {
+			pthread_mutex_unlock(&cache->queue_mutex);
 			return NULL;
 		}
 
@@ -412,6 +415,7 @@ int probe_icache_add(probe_icache_t *cache, SEXP_t *cobj, SEXP_t *item)
         if (pthread_cond_signal(&cache->queue_notempty) != 0) {
                 dE("An error ocured while signaling the `notempty' condition: %u, %s",
                    errno, strerror(errno));
+                pthread_mutex_unlock(&cache->queue_mutex);
                 return (-1);
         }
 
@@ -442,6 +446,7 @@ int probe_icache_nop(probe_icache_t *cache)
         if (pthread_cond_init(&cond, NULL) != 0) {
                 dE("Can't initialize icache queue condition variable (NOP): %u, %s",
                    errno, strerror(errno));
+                pthread_mutex_unlock(&cache->queue_mutex);
                 return (-1);
         }
 
@@ -463,6 +468,7 @@ int probe_icache_nop(probe_icache_t *cache)
                    errno, strerror(errno));
 
                 pthread_cond_destroy(&cond);
+                pthread_mutex_unlock(&cache->queue_mutex);
                 return (-1);
         }
 
@@ -500,6 +506,9 @@ static int probe_cobj_memcheck(size_t item_cnt, double max_ratio)
 		struct sys_memusage  mu_sys;
 		double c_ratio;
 
+		memset(&mu_proc, 0, sizeof(mu_proc));
+		memset(&mu_sys, 0, sizeof(mu_sys));
+
 		if (oscap_proc_memusage (&mu_proc) != 0)
 			return (-1);
 
@@ -520,6 +529,30 @@ static int probe_cobj_memcheck(size_t item_cnt, double max_ratio)
 	return (0);
 }
 
+static int _mark_collected_object_as_incomplete(struct probe_ctx *ctx, const char *message)
+{
+	/*
+	 * Don't set the message again if the collected object is
+	 * already flagged as incomplete.
+	 */
+	if (probe_cobj_get_flag(ctx->probe_out) == SYSCHAR_FLAG_INCOMPLETE) {
+		return 0;
+	}
+	/*
+	 * Sync with the icache thread before modifying the
+	 * collected object.
+	 */
+	if (probe_icache_nop(ctx->icache) != 0) {
+		return -1;
+	}
+
+	SEXP_t *sexp_msg = probe_msg_creat(OVAL_MESSAGE_LEVEL_WARNING, (char *) message);
+	probe_cobj_add_msg(ctx->probe_out, sexp_msg);
+	probe_cobj_set_flag(ctx->probe_out, SYSCHAR_FLAG_INCOMPLETE);
+	SEXP_free(sexp_msg);
+	return 0;
+}
+
 /**
  * Collect an item
  * This function adds an item the collected object assosiated
@@ -537,45 +570,31 @@ static int probe_cobj_memcheck(size_t item_cnt, double max_ratio)
  */
 int probe_item_collect(struct probe_ctx *ctx, SEXP_t *item)
 {
-	SEXP_t *cobj_content;
-	size_t  cobj_itemcnt;
-	int memcheck_ret;
-
 	if (ctx == NULL || ctx->probe_out == NULL || item == NULL) {
 		return -1;
 	}
 
-	cobj_content = SEXP_listref_nth(ctx->probe_out, 3);
-	cobj_itemcnt = SEXP_list_length(cobj_content);
-	SEXP_free(cobj_content);
+	if (ctx->max_collected_items != OSCAP_PROBE_COLLECT_UNLIMITED && ctx->collected_items >= ctx->max_collected_items) {
+		char *message = oscap_sprintf("Object is incomplete because the object matches more than %ld items.", ctx->max_collected_items);
+		if (_mark_collected_object_as_incomplete(ctx, message) != 0) {
+			free(message);
+			return -1;
+		}
+		free(message);
+		return 2;
+	}
 
-	memcheck_ret = probe_cobj_memcheck(cobj_itemcnt, ctx->max_mem_ratio);
+	int memcheck_ret = probe_cobj_memcheck(ctx->collected_items, ctx->max_mem_ratio);
 	if (memcheck_ret == -1) {
 		dE("Failed to check available memory");
+		SEXP_free(item);
 		return -1;
 	}
 	if (memcheck_ret == 1) {
-
-		/*
-		 * Don't set the message again if the collected object is
-		 * already flagged as incomplete.
-		 */
-		if (probe_cobj_get_flag(ctx->probe_out) != SYSCHAR_FLAG_INCOMPLETE) {
-			SEXP_t *msg;
-			/*
-			 * Sync with the icache thread before modifying the
-			 * collected object.
-			 */
-			if (probe_icache_nop(ctx->icache) != 0)
-				return -1;
-
-			msg = probe_msg_creat(OVAL_MESSAGE_LEVEL_WARNING,
-			                      "Object is incomplete due to memory constraints.");
-
-			probe_cobj_add_msg(ctx->probe_out, msg);
-			probe_cobj_set_flag(ctx->probe_out, SYSCHAR_FLAG_INCOMPLETE);
-
-			SEXP_free(msg);
+		SEXP_free(item);
+		const char *message = "Object is incomplete due to memory constraints.";
+		if (_mark_collected_object_as_incomplete(ctx, message) != 0) {
+			return -1;
 		}
 
 		return 2;
@@ -592,6 +611,7 @@ int probe_item_collect(struct probe_ctx *ctx, SEXP_t *item)
                 return (-1);
         }
 
+        ctx->collected_items++;
         return (0);
 }
 

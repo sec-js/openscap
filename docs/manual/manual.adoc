@@ -1,6 +1,7 @@
 = OpenSCAP User Manual
 :imagesdir: ./images
 :workbench_url: https://www.open-scap.org/tools/scap-workbench/
+:json_tailoring_url: https://github.com/ComplianceAsCode/schemas/tree/main/tailoring
 :sce_web:       https://www.open-scap.org/features/other-standards/sce/
 :openscap_web: https://open-scap.org/
 :oscap_git:     https://github.com/OpenSCAP/openscap
@@ -77,7 +78,7 @@ and {usgcb}[USGCB].
 You can also generate your own SCAP content if you have an understanding of at
 least XCCDF or OVAL. XCCDF content is also frequently published online under
 open source licenses, and you can customize this content to suit your needs
-instead. SCAP Workbench is a great tool to do the customization.
+instead.
 
 == Installing OpenSCAP
 
@@ -197,13 +198,6 @@ Checklists:
 				system: http://scap.nist.gov/schema/ocil/2
 			security-data-oval-com.redhat.rhsa-RHEL8.xml
 				system: http://oval.mitre.org/XMLSchema/oval-definitions-5
-Checks:
-	Ref-Id: scap_org.open-scap_cref_ssg-rhel8-oval.xml
-	Ref-Id: scap_org.open-scap_cref_ssg-rhel8-ocil.xml
-	Ref-Id: scap_org.open-scap_cref_ssg-rhel8-cpe-oval.xml
-	Ref-Id: scap_org.open-scap_cref_security-data-oval-com.redhat.rhsa-RHEL8.xml
-Dictionaries:
-	Ref-Id: scap_org.open-scap_cref_ssg-rhel8-cpe-dictionary.xml
 ----
 
 * **Document type** describes what format the file is in. Common types include
@@ -224,8 +218,6 @@ shown for XCCDF files and Checklists and is sourced from the XCCDF **Status**
 element.
 * **Profiles** lists available profiles, their titles and IDs that you can use for
 the `--profile` command line attribute.
-* **Checks** and **Dictionaries** lists OVAL checks components and CPE
-dictionaries components in the given data stream.
 
 To display more detailed information about a profile including the profile
 description, use the `--profile` option followed by the profile ID.
@@ -696,6 +688,34 @@ STIG by DISA. When evaluating a STIG provided by DISA using `oscap`, use the
 `scap-security-guide` content in STIG Viewer and evaluating
 `scap-security-guide` by oscap, use `--results` instead of `--stig-viewer`.
 
+=== Checking for compliance with a particular requirement coverage
+
+A common theme is to check system status based on requirements of a particular policy.
+OpenSCAP can select rules that are related to a specific requirement based on the references in the rules.
+
+1) List references that are supported in your scap content using the `oscap info --references` command.
+This will list of available reference names and their URIs.
+For example:
+
+----
+$ oscap info --references /usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml
+... snip ...
+		References:
+			anssi: http://www.ssi.gouv.fr/administration/bonnes-pratiques/
+			cis: https://www.cisecurity.org/benchmark/red_hat_linux/
+			disa: https://public.cyber.mil/stigs/cci/
+... snip ...
+----
+
+2) Run the evaluation with the `--reference` option, using the name obtained in the previous step and the requirement ID, separated by a colon.
+That will filter the list of rules so that only rules that have the given reference ID assigned would be evaluated.
+For example:
+
+----
+$ oscap xccdf eval --profile cis --reference cis:3.3.2 /usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml
+----
+
+NOTE: If the `oscap info --references` command doesn't list any reference names in the `References` section of its output, it means that the provided SCAP content doesn't support this feature.
 
 == Remediating system
 
@@ -838,6 +858,12 @@ In the following example, we will create a customized profile with ID `custom` b
 ----
 $ autotailor --unselect service_usbguard_enabled --output /tmp/tailoring.xml \
 --new-profile-id custom /usr/share/xml/scap/ssg/content/ssg-rhel8-ds.xml ospp
+----
+
+The `autotailor` tool can also consume {json_tailoring_url}[JSON tailoring] files and convert them into XCCDF Tailoring.
+
+----
+$ autotailor --json-tailoring custom.json /usr/share/xml/scap/ssg/content/ssg-rhel8-ds.xml
 ----
 
 For more details about other options of the `autotailor` program please read the `autotailor(8)` man page or run `autotailor --help`.
@@ -1608,16 +1634,22 @@ not considered local by the scanner:
 
 == List of accepted environment variables
 
+OpenSCAP accepts the following environment variables.
+If OpenSCAP is executed with verbosity level INFO or DEVEL their runtime values will be listed at the beginning of the log.
+
 * `OSCAP_CHECK_ENGINE_PLUGIN_DIR` - Defines path to a directory that contains plug-in libraries implementing additional check engines, eg. SCE.
 * `OSCAP_CONTAINER_VARS` - Additional environment variables read by environmentvariable58_probe. The variables are separated by `\n`. It is used by `oscap-podman` and `oscap-docker` scripts during container scanning.
 * `OSCAP_EVALUATION_TARGET` - Change value of target facts `urn:xccdf:fact:identifier` and `urn:xccdf:fact:asset:identifier:ein` in XCCDF results. Used during offline scanning to pass the name of the target system.
 * `OSCAP_FULL_VALIDATION` - If set, XML schema validation will be performed in every step of SCAP content processing.
 * `OSCAP_OVAL_COMMAND_OPTIONS` - Additional command line options for `oscap oval` module. The value of this environment variable is appended to the actual command line options of `oscap` command.
-* `OSCAP_PCRE_EXEC_RECURSION_LIMIT` - Set recursion limit of regular expression matching using `pcre_exec` function.
+* `OSCAP_PCRE_EXEC_RECURSION_LIMIT` - Set recursion limit of regular expression matching using `pcre_exec`/`pcre2_match` functions.
 * `OSCAP_PROBE_ROOT` - Path to a directory which contains mounted filesystem to be evaluated. Used for offline scanning.
 * `SEXP_VALIDATE_DISABLE` - If set, `oscap` will not validate SEXP expressions during its execution.
 * `SOURCE_DATE_EPOCH` - Timestamp in seconds since epoch. This timestamp will be used instead of the current time to populate `timestamp` attributes in SCAP source data streams created by `oscap ds sds-compose` sub-module. This is used for reproducible builds of data streams.
 * `OSCAP_PROBE_MEMORY_USAGE_RATIO` - maximum memory usage ratio (used/total) for OpenSCAP probes, default: 0.1
+* `OSCAP_PROBE_MAX_COLLECTED_ITEMS` - maximal count of collected items by OpenSCAP probe for a single OVAL object evaluation
+* `OSCAP_PROBE_IGNORE_PATHS` - Skip given paths during evaluation. If multiple paths should be skipped they need to be separated by a colon. The paths should be absolute canonical paths.
+* `OSCAP_PREFERRED_ENGINE` - Set a preffered check engine for XCCDF rules. If a rule has multiple checks, the checks for the preffered check engine will be used. Allowed values: `SCE`, `OVAL`. If this variable is set to `SCE` and a rule has both SCE and OVAL checks the SCE check will be used. If this variable is set to `OVAL` and a rule has both SCE and OVAL checks the OVAL check will be used. If this environment variable isn't set, the standard XCCDF mechanism will be used for check selection.
 
 Also, OpenSCAP uses `libcurl` library which also can be configured using environment variables. See https://curl.se/libcurl/c/libcurl-env.html[the list of libcurl environment variables].
 
@@ -2102,6 +2134,43 @@ registry.access.redhat.com/ubi8  latest  3269c37eae33  2 months ago  208 MB
 
 Note that the `oscap-podman` command requires root privileges.
 
+=== Building hardened bootable container images using oscap-im
+
+The `oscap-im` tool is a convenience script that makes building hardened bootable container images easier.
+This tool is designed to be used during the build of the bootable container image.
+
+Include `oscap-im` in your `Containerfile` that will be used to build your bootable container image.
+The `Containerfile` first needs to install the `openscap-utils` package which ships the `oscap-im` tool.
+
+Also, SCAP content needs to be installed to the image before `oscap-im` will be run.
+Although any SCAP content can be consumed by the tool, the SCAP source data streams shipped in `scap-security-guide` are specially cared to be compatible with bootable containers.
+
+Example `Containerfile`:
+
+----
+FROM quay.io/centos-bootc/centos-bootc:stream9
+
+RUN dnf install -y openscap-utils scap-security-guide
+
+RUN oscap-im --profile stig /usr/share/xml/scap/ssg/content/ssg-cs9-ds.xml
+----
+
+Once you have your `Containerfile`, execute the image build:
+
+----
+podman build -t hardened_image .
+----
+
+The `oscap-im` tool installs and removes all packages required by the selected profile to or from the image.
+Then, it runs a scan and remediation with the selected profile.
+It doesn't use offline scanning.
+The configuration files and other content in the image are modified by this process, depending on the used SCAP content.
+
+The built bootable container image can be then deployed and booted.
+After booting the image, the state of the resulting system will be in line with the selected security profile.
+
+The `oscap-im` tool can't be used anywhere else than in a `Containerfile`.
+
 === Scanning of Docker containers and images using oscap-docker
 
 The `oscap-docker` is used to scan Docker containers and images. It can
@@ -2210,10 +2279,17 @@ OSCAP_REMEDIATE_VERBOSE_LEVEL=INFO
 
 The downloaded guidance contains rule descriptions, but it doesn't contain OVAL checks which could be used for evaluation by OpenSCAP. You can find guidances with implemented OVAL checks and also with remediations at https://github.com/ComplianceAsCode/content[ComplianceAsCode] project, which contains wide range of profiles.
 
+*How can I create a tailoring file if I can't install SCAP Workbench?*
+
+Use the `autotailor` tool which allows you to create tailoring files using command line options.
+For more information, please refer to section <<_tailoring,Tailoring>>.
+
 *I try to apply a tailoring file, but OpenSCAP still evaluates rules that I have unselected. How can I enforce my changes of the profile?*
 
 Make sure that you provide the ID of the customized profile in `--profile` option instead of the ID of the original profile.
-If you created the tailoring file using SCAP Workbench, you were prompted to choose the ID of the customized profile. You can display the ID of the customized profile by running `oscap info <your_tailoring_file>`. By default, the ID of the customized profile ends with `_customized` suffix.
+If you created the tailoring file using `autotailor` and you haven't used the `-p` or `--new-profile-id` option, the ID of the customized profile is the original profile ID with `_customized` suffix appended.
+If you created the tailoring file using SCAP Workbench, you were prompted to choose the ID of the customized profile. By default, the ID of the customized profile is the original profile ID with `_customized` suffix appended.
+You can find the ID of the customized profile with `oscap info <your_tailoring_file>` command.
 
 *My SCAP source data stream contains rule `security_patches_up_to_date` which needs to download some data from the internet to work.*
 *But I'm in an air gapped environment so it can't download it.*

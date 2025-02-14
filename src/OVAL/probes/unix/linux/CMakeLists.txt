@@ -1,12 +1,9 @@
 if(OPENSCAP_PROBE_LINUX_DPKGINFO)
 	list(APPEND LINUX_PROBES_SOURCES
-		"dpkginfo-helper.cxx"
+		"dpkginfo-helper.c"
 		"dpkginfo-helper.h"
 		"dpkginfo_probe.c"
 		"dpkginfo_probe.h"
-	)
-	list(APPEND LINUX_PROBES_INCLUDE_DIRECTORIES
-		${APTPKG_INCLUDE_DIR}
 	)
 endif()
 
@@ -92,6 +89,8 @@ endif()
 if(OPENSCAP_PROBE_LINUX_SYSTEMDUNITDEPENDENCY OR OPENSCAP_PROBE_LINUX_SYSTEMDUNITPROPERTY)
 	list(APPEND LINUX_PROBES_SOURCES
 		"systemdshared.h"
+		"oval_dbus.c"
+		"oval_dbus.h"
 	)
 	list(APPEND LINUX_PROBES_INCLUDE_DIRECTORIES
 		${DBUS_INCLUDE_DIRS}
@@ -114,8 +113,15 @@ endif()
 
 if(OPENSCAP_PROBE_LINUX_FWUPDSECURITYATTR)
 	list(APPEND LINUX_PROBES_SOURCES
+		"oval_dbus.c"
+		"oval_dbus.h"
+	)
+	list(APPEND LINUX_PROBES_SOURCES
 		"fwupdsecattr_probe.c"
 		"fwupdsecattr_probe.h"
+	)
+	list(APPEND LINUX_PROBES_INCLUDE_DIRECTORIES
+		${DBUS_INCLUDE_DIRS}
 	)
 endif()
 

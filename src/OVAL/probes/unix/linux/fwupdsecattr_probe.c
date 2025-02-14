@@ -61,8 +61,8 @@
 #include "probe/entcmp.h"
 #include "common/debug_priv.h"
 
+#include "oval_dbus.h"
 #include "fwupdsecattr_probe.h"
-#include "systemdshared.h"
 
 
 static struct cachehed hsi_result_cache;
@@ -81,6 +81,7 @@ static void hsicache_callback(char *name, const uint32_t value)
 	}
 	entry->name = oscap_strdup(name);
 	entry->hsi_result = value;
+	dD("HSI cache add name: %s value: %d\n", entry->name, entry->hsi_result);
 	LIST_INSERT_HEAD(&hsi_result_cache, entry, entries);
 }
 
@@ -89,12 +90,13 @@ static uint32_t hsicache_get(const char *key)
 	struct secattr_cache *next;
 
 	LIST_FOREACH(next, &hsi_result_cache, entries) {
-		dD("HSI search key %s name %s value %d\n", key, next->name, next->hsi_result);
+		dD("HSI search key: %s (name: %s value: %d)\n", key, next->name, next->hsi_result);
 		if (!strncmp(next->name, key, strlen(next->name))) {
 			return next->hsi_result;
 		}
 	}
 
+	dW("HSI key not found: %s\n", key);
 	return UINT32_MAX;
 }
 
@@ -119,13 +121,14 @@ static int get_all_security_attributes(DBusConnection *conn, void(*callback)(cha
 	}
 
 	DBusMessageIter args, property_iter;
+	_DBusBasicValue value;
 
 	if (!dbus_connection_send_with_reply(conn, msg, &pending, -1)) {
-		dD("Failed to send message via dbus!");
+		dD("Failed to send message via D-Bus!");
 		goto cleanup;
 	}
 	if (pending == NULL) {
-		dD("Invalid dbus pending call!");
+		dD("Invalid D-Bus pending call!");
 		goto cleanup;
 	}
 
@@ -135,18 +138,19 @@ static int get_all_security_attributes(DBusConnection *conn, void(*callback)(cha
 	dbus_pending_call_block(pending);
 	msg = dbus_pending_call_steal_reply(pending);
 	if (msg == NULL) {
-		dD("Failed to steal dbus pending call reply.");
+		dD("Failed to steal D-Bus pending call reply.");
 		goto cleanup;
 	}
 	dbus_pending_call_unref(pending); pending = NULL;
 
 	if (!dbus_message_iter_init(msg, &args)) {
-		dD("Failed to initialize iterator over received dbus message.");
+		dD("Failed to initialize iterator over received D-Bus message.");
 		goto cleanup;
 	}
 
 	if (dbus_message_get_type(msg) == DBUS_MESSAGE_TYPE_ERROR) {
-		dD("Receive an error exception from dBus");
+		dbus_message_iter_get_basic(&args, &value);
+		dW("Received an error from D-Bus (%s): %s", dbus_message_get_error_name(msg), value.str);
 		goto cleanup;
 	}
 
@@ -180,7 +184,6 @@ static int get_all_security_attributes(DBusConnection *conn, void(*callback)(cha
 				goto cleanup;
 			}
 
-			_DBusBasicValue value;
 			dbus_message_iter_get_basic(&dict_entry, &value);
 			property_name = oscap_strdup(value.str);
 			dD("Element key: %s", property_name);
@@ -203,7 +206,7 @@ static int get_all_security_attributes(DBusConnection *conn, void(*callback)(cha
 
 			switch (arg_type) {
 				case DBUS_TYPE_UINT32:
-					if(strncmp(property_name, "HsiResult", strlen("HsiResult")) == 0) {
+					if(!strncmp(property_name, "HsiResult", strlen("HsiResult"))) {
 						_DBusBasicValue hsiresult_value;
 						dbus_message_iter_get_basic(&value_variant, &hsiresult_value);
 						hsi_flags = hsiresult_value.u32;
@@ -211,7 +214,8 @@ static int get_all_security_attributes(DBusConnection *conn, void(*callback)(cha
 					break;
 				case DBUS_TYPE_STRING:
 					if(!strncmp(property_name, "AppstreamId", strlen("AppstreamId"))) {
-						appstream_name = dbus_value_to_string(&value_variant);
+						free(appstream_name);
+						appstream_name = oval_dbus_value_to_string(&value_variant);
 						dD("Element string: %s", appstream_name);
 					}
 					break;
@@ -219,8 +223,9 @@ static int get_all_security_attributes(DBusConnection *conn, void(*callback)(cha
 			free(property_name);
 		} while (dbus_message_iter_next(&array_entry));
 		callback(appstream_name, hsi_flags);
-	}
-	while (dbus_message_iter_next(&property_iter));
+		free(appstream_name);
+		appstream_name = NULL;
+	} while (dbus_message_iter_next(&property_iter));
 
 	dbus_message_unref(msg); msg = NULL;
 	ret = 0;
@@ -231,6 +236,8 @@ cleanup:
 
 	if (msg != NULL)
 		dbus_message_unref(msg);
+
+	free(appstream_name);
 
 	return ret;
 }
@@ -274,32 +281,26 @@ fwupd_security_attr_result_to_string(FwupdSecurityAttrResult result)
 		return "supported";
 	if (result == FWUPD_SECURITY_ATTR_RESULT_NOT_SUPPORTED)
 		return "not-supported";
-	return NULL;
+	if (result == FWUPD_SECURITY_ATTR_RESULT_UNKNOWN) {
+		dD("Got FWUPD_SECURITY_ATTR_RESULT_UNKNOWN\n");
+		return "unknown";
+	}
+	dW("Unknown/invalid FwupdSecurityAttrResult value: %d\n", result);
+	return "invalid-hsi-result";
 }
 
 int fwupdsecattr_probe_main(probe_ctx *ctx, void *arg)
 {
 	SEXP_t *val, *item, *ent, *probe_in;
-	oval_schema_version_t oval_version;
 	char *stream_id = NULL;
 	const char *hsi_result_str;
 	uint64_t hsi_result = UINT64_MAX;
-
-	/* arg is NULL if regex compilation failed */
-	if (arg == NULL) {
-		return PROBE_EINIT;
-	}
 
 	probe_in = probe_ctx_getobject(ctx);
 	if (probe_in == NULL)
 		return PROBE_ENOOBJ;
 
-	oval_version = probe_obj_get_platform_schema_version(probe_in);
-	if (oval_schema_version_cmp(oval_version, OVAL_SCHEMA_VERSION(5.11.3)) < 0) {
-		return PROBE_EOPNOTSUPP;
-	}
-
-	ent = probe_obj_getent(probe_in, "stream-id", 1);
+	ent = probe_obj_getent(probe_in, "stream_id", 1);
 	if (ent == NULL)
 		return PROBE_ENOENT;
 
@@ -313,29 +314,32 @@ int fwupdsecattr_probe_main(probe_ctx *ctx, void *arg)
 	SEXP_free(val);
 	SEXP_free(ent);
 
-	DBusError dbus_error;
-	DBusConnection *dbus_conn;
-
 	if (LIST_EMPTY(&hsi_result_cache)) {
+		DBusError dbus_error;
+		DBusConnection *dbus_conn;
+
 		dbus_error_init(&dbus_error);
-		dbus_conn = connect_dbus();
+		dbus_conn = oval_connect_dbus();
 
 		if (dbus_conn == NULL) {
 			dbus_error_free(&dbus_error);
-			SEXP_t *msg = probe_msg_creat(OVAL_MESSAGE_LEVEL_INFO, "DBus connection failed, could not identify fwupd.");
+			SEXP_t *msg = probe_msg_creat(OVAL_MESSAGE_LEVEL_INFO, "D-Bus connection failed, could not identify fwupd.");
 			probe_cobj_set_flag(probe_ctx_getresult(ctx), SYSCHAR_FLAG_ERROR);
 			probe_cobj_add_msg(probe_ctx_getresult(ctx), msg);
 			SEXP_free(msg);
-			return 0;
+			goto exit;
 		}
 
-		if (get_all_security_attributes(dbus_conn, hsicache_callback, NULL)) {
+		int res = get_all_security_attributes(dbus_conn, hsicache_callback, NULL);
+		oval_disconnect_dbus(dbus_conn);
+
+		if (res) {
 			dbus_error_free(&dbus_error);
-			SEXP_t *msg = probe_msg_creat(OVAL_MESSAGE_LEVEL_INFO, "fwupd is not properly installed or configured.");
+			SEXP_t *msg = probe_msg_creat(OVAL_MESSAGE_LEVEL_INFO, "The fwupd service is not properly installed or configured.");
 			probe_cobj_set_flag(probe_ctx_getresult(ctx), SYSCHAR_FLAG_ERROR);
 			probe_cobj_add_msg(probe_ctx_getresult(ctx), msg);
 			SEXP_free(msg);
-			return 0;
+			goto exit;
 		}
 	}
 
@@ -343,7 +347,7 @@ int fwupdsecattr_probe_main(probe_ctx *ctx, void *arg)
 
 	if (hsi_result == UINT32_MAX) {
 		item = probe_item_create(OVAL_LINUX_FWUPDSECATTR, NULL,
-					 "security-attr", OVAL_DATATYPE_STRING, "Attribute not found",
+					 "security_attr", OVAL_DATATYPE_STRING, "not-found",
 					 NULL);
 		probe_item_setstatus(item, SYSCHAR_STATUS_NOT_COLLECTED);
 		probe_item_collect(ctx, item);
@@ -352,12 +356,11 @@ int fwupdsecattr_probe_main(probe_ctx *ctx, void *arg)
 
 	hsi_result_str = fwupd_security_attr_result_to_string(hsi_result);
 	item = probe_item_create(OVAL_LINUX_FWUPDSECATTR, NULL,
-				 "security-attr", OVAL_DATATYPE_STRING, hsi_result_str,
+				 "security_attr", OVAL_DATATYPE_STRING, hsi_result_str,
 				 NULL);
 	probe_item_collect(ctx, item);
 
 exit:
 	free(stream_id);
-	disconnect_dbus(dbus_conn);
 	return 0;
 }

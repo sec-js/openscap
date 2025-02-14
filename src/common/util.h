@@ -32,8 +32,8 @@
 #include "public/oscap.h"
 #include <stdarg.h>
 #include <string.h>
-#include <pcre.h>
 #include "oscap_export.h"
+#include "oscap_pcre.h"
 
 #ifndef __attribute__nonnull__
 #define __attribute__nonnull__(x) assert((x) != NULL)
@@ -313,6 +313,24 @@ static inline char *oscap_strdup(const char *str) {
 #endif
 }
 
+/**
+ * Removes all occurrences of substr from str by shifting the contents to
+ * the left. If string is NULL, does nothing.
+ * @param str String we want to process
+ * @param substr Sub-string we want to get rid of
+ */
+static inline void oscap_strrm(char *str, const char *substr) {
+	if (str == NULL)
+		return;
+
+	size_t sublen = strlen(substr);
+	char *ptr = strstr(str, substr);
+	while (ptr != NULL) {
+		memmove(ptr, ptr+sublen, strlen(ptr) - sublen + 1);
+		ptr = strstr(str, substr);
+	}
+}
+
 /// Just like strcmp except it's NULL-safe. Use the standard strcmp directly if possible.
 static inline int oscap_strcmp(const char *s1, const char *s2) {
 	if (s1 == NULL) s1 = "";
@@ -469,20 +487,6 @@ int oscap_strncasecmp(const char *s1, const char *s2, size_t n);
  */
 char *oscap_strerror_r(int errnum, char *buf, size_t buflen);
 
-/**
- * Match a regular expression and return substrings.
- * Caller is responsible for freeing the returned array.
- * @param str subject string
- * @param ofs starting offset in str
- * @param re compiled regular expression
- * @param want_substrs if non-zero, substrings will be returned
- * @param substrings contains returned substrings
- * @return count of matched substrings, 0 if no match
- * negative value on failure
- */
-int oscap_get_substrings(char *str, int *ofs, pcre *re, int want_substrs, char ***substrings);
-
-
 #ifndef OS_WINDOWS
 /**
  * Open file for reading with prefix added to its name.
@@ -535,5 +539,13 @@ char *oscap_windows_error_message(unsigned long error_code);
  * @return file descriptor or -1 on error
  */
 int oscap_open_writable(const char *filename);
+
+/**
+ * Check if a path starts with the given prefix
+ * @param path file system path
+ * @param prefix file system path that will be tested if it's a prefix of the path parameter
+ * @return true or false
+ */
+bool oscap_path_startswith(const char *path, const char *prefix);
 
 #endif              /* OSCAP_UTIL_H_ */

@@ -11,7 +11,7 @@ endif()
 project("openscap")
 set(OPENSCAP_VERSION_MAJOR "1")
 set(OPENSCAP_VERSION_MINOR "3")
-set(OPENSCAP_VERSION_PATCH "8")
+set(OPENSCAP_VERSION_PATCH "12")
 
 if(OPENSCAP_VERSION_SUFFIX)
 	set(OPENSCAP_VERSION "${OPENSCAP_VERSION_MAJOR}.${OPENSCAP_VERSION_MINOR}.${OPENSCAP_VERSION_PATCH}_${OPENSCAP_VERSION_SUFFIX}")
@@ -23,7 +23,7 @@ endif()
 # See http://sources.redhat.com/autobook/autobook/autobook_91.html#SEC91 for details
 
 ## increment if the interface has additions, changes, removals.
-set(LT_CURRENT 30)
+set(LT_CURRENT 32)
 
 ## increment any time the source changes; set 0 to if you increment CURRENT
 set(LT_REVISION 1)
@@ -31,7 +31,7 @@ set(LT_REVISION 1)
 ## increment if any interfaces have been added; set to 0
 ## if any interfaces have been changed or removed. removal has
 ## precedence over adding, so set to 0 if both happened.
-set(LT_AGE 5)
+set(LT_AGE 7)
 
 math(EXPR LT_CURRENT_MINUS_AGE "${LT_CURRENT} - ${LT_AGE}")
 
@@ -106,7 +106,11 @@ find_package(Doxygen)
 find_package(GConf)
 find_package(Ldap)
 find_package(OpenDbx)
-find_package(PCRE REQUIRED)
+if(WITH_PCRE2)
+	find_package(PCRE2 REQUIRED)
+else()
+	find_package(PCRE REQUIRED)
+endif()
 find_package(PerlLibs)
 find_package(Popt)
 find_package(Systemd)
@@ -125,8 +129,8 @@ endif()
 find_package(PythonInterp 3)
 find_package(PythonLibs 3)
 
-set(PREFERRED_PYTHON_PATH "${PYTHON_EXECUTABLE}")
-set(PYTHON3_PATH "${PYTHON_EXECUTABLE}")
+set(PREFERRED_PYTHON_PATH "${PYTHON_EXECUTABLE}" CACHE PATH "Path to preferred Python")
+set(PYTHON3_PATH "${PYTHON_EXECUTABLE}" CACHE PATH "Path to Python3")
 
 find_package(RPM)
 if(RPM_FOUND)
@@ -172,13 +176,13 @@ check_library_exists(pthread pthread_setname_np "" HAVE_PTHREAD_SETNAME_NP)
 check_library_exists(pthread pthread_getname_np "" HAVE_PTHREAD_GETNAME_NP)
 
 # WITH_CRYPTO
-set(WITH_CRYPTO "gcrypt" CACHE STRING "gcrypt|nss3")
-if(NOT (${WITH_CRYPTO} EQUAL "nss3"))
-	# gcrypt
-	find_package(GCrypt)
-else()
-	# nss3
+set(WITH_CRYPTO "gcrypt" CACHE STRING "gcrypt|nss")
+if(${WITH_CRYPTO} STREQUAL "nss")
+	message("-- Using NSS")
 	find_package(NSS)
+else()
+	message("-- Using GCrypt")
+	find_package(GCrypt)
 endif()
 if(GCRYPT_FOUND OR NSS_FOUND)
 	set(CRYPTO_FOUND TRUE)
@@ -191,6 +195,13 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/yaml-filter/CMakeLists.txt)
 else()
 	message(STATUS "yaml-filter was not found")
 	set(YAML_FILTER_FOUND FALSE)
+endif()
+
+if(PCRE2_FOUND)
+	set(HAVE_PCRE2 1)
+	message("-- Using PCRE2")
+elseif(PCRE_FOUND)
+	message("-- Using PCRE")
 endif()
 
 check_library_exists(rt clock_gettime "" HAVE_CLOCK_GETTIME)
@@ -288,7 +299,7 @@ cmake_dependent_option(OPENSCAP_PROBE_UNIX_UNAME "Unix uname probe" ON "ENABLE_P
 cmake_dependent_option(OPENSCAP_PROBE_UNIX_XINETD "Unix xinetd probe" ON "ENABLE_PROBES_UNIX" OFF)
 
 # LINUX PROBES
-cmake_dependent_option(OPENSCAP_PROBE_LINUX_DPKGINFO "Linux dpkginfo probe" ON "ENABLE_PROBES_LINUX; APTPKG_FOUND" OFF)
+cmake_dependent_option(OPENSCAP_PROBE_LINUX_DPKGINFO "Linux dpkginfo probe" ON "ENABLE_PROBES_LINUX" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_LINUX_IFLISTENERS "Linux iflisteners probe" ON "ENABLE_PROBES_LINUX" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_LINUX_INETLISTENINGSERVERS "Linux inetlisteningservers probe" ON "ENABLE_PROBES_LINUX" OFF)
 cmake_dependent_option(OPENSCAP_PROBE_LINUX_PARTITION "Linux partition probe" ON "ENABLE_PROBES_LINUX; BLKID_FOUND" OFF)
@@ -326,9 +337,12 @@ cmake_dependent_option(ENABLE_OSCAP_UTIL_AS_RPM "enable the scap-as-rpm utility,
 cmake_dependent_option(ENABLE_OSCAP_UTIL_SSH "enables the oscap-ssh utility, this lets you scan remote machines over ssh" ON "NOT WIN32" OFF)
 cmake_dependent_option(ENABLE_OSCAP_UTIL_VM "enables the oscap-vm utility, this lets you scan VMs and VM storage images" ON "NOT WIN32" OFF)
 cmake_dependent_option(ENABLE_OSCAP_UTIL_PODMAN "enables the oscap-podman utility, this lets you scan Podman containers and container images" ON "NOT WIN32" OFF)
+cmake_dependent_option(ENABLE_OSCAP_UTIL_IM "enables the oscap-im utility, this lets you build hardened bootable container images" ON "NOT WIN32" OFF)
 cmake_dependent_option(ENABLE_OSCAP_UTIL_CHROOT "enables the oscap-chroot utility, this lets you scan entire chroots using offline scanning" ON "NOT WIN32" OFF)
 option(ENABLE_OSCAP_UTIL_AUTOTAILOR "enables the autotailor utility that is able to perform command-line tailoring" TRUE)
-option(ENABLE_OSCAP_REMEDIATE_SERVICE "enables the oscap-remediate service" TRUE)
+option(ENABLE_OSCAP_REMEDIATE_SERVICE "enables the oscap-remediate service" FALSE)
+
+option(WITH_PCRE2 "use PCRE2 library" FALSE)
 
 # ---------- TEST-SUITE SWITCHES
 
@@ -347,7 +361,7 @@ option(ENABLE_MITRE "enables MITRE tests -- requires specific environment suppor
 
 # ---------- LANGUAGE BINDINGS
 cmake_dependent_option(ENABLE_PYTHON3 "if enabled, the python3 swig bindings will be built" ON "PYTHONINTERP_FOUND;SWIG_FOUND;PYTHONLIBS_FOUND" OFF)
-cmake_dependent_option(ENABLE_PERL "if enabled, the perl swig bindings will be built" ON "PERLLIBS_FOUND;SWIG_FOUND" OFF)
+cmake_dependent_option(ENABLE_PERL "if enabled, the perl swig bindings will be built" ON "PERLLIBS_FOUND;SWIG_FOUND;NOT WIN32" OFF)
 
 # ---------- NO IDEA WHAT THIS IS FOR
 set(WANT_BASE64 TRUE CACHE BOOL "wants builtin Base64")
@@ -420,7 +434,7 @@ message(STATUS "  Unix xinetd probe: ${OPENSCAP_PROBE_UNIX_XINETD}")
 message(STATUS " ")
 
 message(STATUS "Linux probes: ${ENABLE_PROBES_LINUX}")
-message(STATUS "  Linux dpkginfo probe (depends on aptpkg): ${OPENSCAP_PROBE_LINUX_DPKGINFO}")
+message(STATUS "  Linux dpkginfo probe: ${OPENSCAP_PROBE_LINUX_DPKGINFO}")
 message(STATUS "  Linux iflisteners probe: ${OPENSCAP_PROBE_LINUX_IFLISTENERS}")
 message(STATUS "  Linux inetlisteningservers probe: ${OPENSCAP_PROBE_LINUX_INETLISTENINGSERVERS}")
 message(STATUS "  Linux partition probe (depends on blkid): ${OPENSCAP_PROBE_LINUX_PARTITION}")
@@ -450,6 +464,10 @@ message(STATUS " ")
 message(STATUS "Language bindings:")
 message(STATUS "python3 bindings: ${ENABLE_PYTHON3}")
 message(STATUS "perl bindings: ${ENABLE_PERL}")
+message(STATUS "perl vendorlib: ${PERL_VENDORLIB}")
+message(STATUS "perl vendorarch: ${PERL_VENDORARCH}")
+message(STATUS "perl privlib: ${PERL_PRIVLIB}")
+message(STATUS "perl archlib: ${PERL_ARCHLIB}")
 message(STATUS " ")
 
 message(STATUS "Utilities:")
@@ -459,6 +477,7 @@ message(STATUS "scap-as-rpm: ${ENABLE_OSCAP_UTIL_AS_RPM}")
 message(STATUS "oscap-ssh: ${ENABLE_OSCAP_UTIL_SSH}")
 message(STATUS "oscap-vm: ${ENABLE_OSCAP_UTIL_VM}")
 message(STATUS "oscap-podman: ${ENABLE_OSCAP_UTIL_PODMAN}")
+message(STATUS "oscap-im: ${ENABLE_OSCAP_UTIL_IM}")
 message(STATUS "oscap-chroot: ${ENABLE_OSCAP_UTIL_CHROOT}")
 message(STATUS "autotailor: ${ENABLE_OSCAP_UTIL_AUTOTAILOR}")
 message(STATUS " ")
@@ -516,7 +535,8 @@ if (MSVC)
 endif()
 
 if (${CMAKE_C_COMPILER_ID} STREQUAL "GNU" OR ${CMAKE_C_COMPILER_ID} STREQUAL "Clang")
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pipe -W -Wall -Wnonnull -Wshadow -Wformat -Wundef -Wno-unused-parameter -Wmissing-prototypes -Wno-unknown-pragmas -D_GNU_SOURCE -std=c99")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pipe -W -Wall -Wnonnull -Wshadow -Wformat -Wundef -Wno-unused-parameter -Wmissing-prototypes -Wno-unknown-pragmas -Wno-int-conversion -Werror=implicit-function-declaration -D_GNU_SOURCE -std=c99")
+	add_link_options(-Wl,-z,now)
 endif()
 if(${CMAKE_SYSTEM_NAME} STREQUAL "FreeBSD")
 	add_link_options(-lkvm -lm -lprocstat)
@@ -563,6 +583,7 @@ include_directories(
 	${XMLSEC_INCLUDE_DIRS}
 	${OPENSSL_INCLUDE_DIR}
 	${PCRE_INCLUDE_DIRS}
+	${PCRE2_INCLUDE_DIRS}
 )
 
 # Honor visibility properties for all target types
@@ -618,7 +639,7 @@ if(NOT WIN32)
 			configure_file("oscap-remediate.service.in" "oscap-remediate.service" @ONLY)
 			install(FILES
 				${CMAKE_CURRENT_BINARY_DIR}/oscap-remediate.service
-				DESTINATION ${SYSTEMD_UNITDIR}
+				DESTINATION ${CMAKE_INSTALL_PREFIX}/${SYSTEMD_UNITDIR}
 			)
 		endif()
 	endif()

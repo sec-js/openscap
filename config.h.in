@@ -19,8 +19,8 @@
 #cmakedefine HAVE_GCRYCTL_SET_ENFORCED_FIPS_FLAG
 #endif
 
-#cmakedefine NSS3_FOUND
-#if defined(NSS3_FOUND)
+#cmakedefine NSS_FOUND
+#if defined(NSS_FOUND)
 #define HAVE_NSS3
 #endif
 
@@ -28,6 +28,8 @@
 #define OSCAP_DEFAULT_XSLT_PATH "@OSCAP_DEFAULT_XSLT_PATH@"
 #define OSCAP_DEFAULT_CPE_PATH "@OSCAP_DEFAULT_CPE_PATH@"
 #define OSCAP_TEMP_DIR "@OSCAP_TEMP_DIR@"
+
+#cmakedefine HAVE_PCRE2
 
 #cmakedefine HAVE_ATOMIC_BUILTINS
 

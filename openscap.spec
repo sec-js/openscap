@@ -15,7 +15,11 @@ BuildRequires:  gcc-c++
 BuildRequires:  swig libxml2-devel libxslt-devel perl-generators perl-XML-Parser
 BuildRequires:  rpm-devel
 BuildRequires:  libgcrypt-devel
+%if 0%{?fedora}
+BuildRequires:  pcre2-devel
+%else
 BuildRequires:  pcre-devel
+%endif
 BuildRequires:  libacl-devel
 BuildRequires:  libselinux-devel
 BuildRequires:  libcap-devel
@@ -27,10 +31,10 @@ BuildRequires:  glib2-devel
 BuildRequires:  dbus-devel
 BuildRequires:  libyaml-devel
 BuildRequires:  xmlsec1-devel xmlsec1-openssl-devel
-BuildRequires:  systemd
 %if %{?_with_check:1}%{!?_with_check:0}
 BuildRequires:  perl-XML-XPath
 BuildRequires:  bzip2
+BuildRequires:  python3-dbusmock
 %endif
 Requires:       bash
 Requires:       bzip2-libs
@@ -130,6 +134,9 @@ Tool for scanning Atomic containers.
 # gconf is a legacy system not used any more, and it blocks testing of oscap-anaconda-addon
 # as gconf is no longer part of the installation medium
 %cmake \
+%if 0%{?fedora}
+    -DWITH_PCRE2=ON \
+%endif
     -DENABLE_PERL=OFF \
     -DENABLE_DOCS=ON \
     -DOPENSCAP_PROBE_UNIX_GCONF=OFF \
@@ -148,15 +155,13 @@ ctest -V %{?_smp_mflags}
 find $RPM_BUILD_ROOT -name '*.la' -exec rm -f {} ';'
 
 # fix python shebangs
+%if 0%{?fedora}
+%{__python3} %{_rpmconfigdir}/redhat/pathfix.py -i %{__python3} -p -n $RPM_BUILD_ROOT%{_bindir}/scap-as-rpm
+%else
 pathfix.py -i %{__python3} -p -n $RPM_BUILD_ROOT%{_bindir}/scap-as-rpm
+%endif
 
 %ldconfig_scriptlets
-
-# enable oscap-remediate.service here for now
-# https://github.com/hughsie/PackageKit/issues/401
-# https://bugzilla.redhat.com/show_bug.cgi?id=1833176
-mkdir -p %{buildroot}%{_unitdir}/system-update.target.wants/
-ln -sf ../oscap-remediate.service %{buildroot}%{_unitdir}/system-update.target.wants/oscap-remediate.service
 
 %files
 %doc AUTHORS NEWS README.md
@@ -190,9 +195,6 @@ ln -sf ../oscap-remediate.service %{buildroot}%{_unitdir}/system-update.target.w
 %{_bindir}/oscap
 %{_bindir}/oscap-chroot
 %{_sysconfdir}/bash_completion.d
-%{_libexecdir}/oscap-remediate
-%{_unitdir}/oscap-remediate.service
-%{_unitdir}/system-update.target.wants/
 
 %files utils
 %doc docs/oscap-scan.cron
